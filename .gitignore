@@ -1,0 +1,28 @@
+# Binaries
+/review-service
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+/db-data/
+postgres_data/
+
+# Logs
+*.log
+
+# Docker
+Dockerfile.dev
