@@ -7,31 +7,33 @@ import (
 )
 
 func InitTestData(repo *repo.Repository) {
-	team := &models.Team{Name: "backend-team"}
-	if err := repo.CreateTeam(team); err != nil {
-		log.Printf("Team might already exist: %v", err)
+	// Создаем тестовую команду backend
+	backendTeam := &models.Team{
+		TeamName: "backend",
+		Members: []models.TeamMember{
+			{UserID: "u1", Username: "alice", IsActive: true},
+			{UserID: "u2", Username: "bob", IsActive: true},
+			{UserID: "u3", Username: "charlie", IsActive: true},
+			{UserID: "u4", Username: "diana", IsActive: true},
+		},
 	}
 
-	users := []struct {
-		username string
-		teamID   int
-	}{
-		{"alice", 1},
-		{"bob", 1},
-		{"charlie", 1},
-		{"diana", 1},
+	if err := repo.CreateTeam(backendTeam); err != nil {
+		log.Printf("Backend team might already exist: %v", err)
 	}
 
-	for _, u := range users {
-		user := &models.User{
-			Username: u.username,
-			IsActive: true,
-			TeamID:   u.teamID,
-		}
-		if err := repo.CreateUser(user); err != nil {
-			log.Printf("Failed to create user %s: %v", u.username, err)
-		}
+	// Создаем тестовую команду frontend
+	frontendTeam := &models.Team{
+		TeamName: "frontend",
+		Members: []models.TeamMember{
+			{UserID: "u5", Username: "eve", IsActive: true},
+			{UserID: "u6", Username: "frank", IsActive: true},
+		},
 	}
 
-	log.Println("Test data initialized")
+	if err := repo.CreateTeam(frontendTeam); err != nil {
+		log.Printf("Frontend team might already exist: %v", err)
+	}
+
+	log.Println("Test data initialized with string IDs")
 }

@@ -4,7 +4,6 @@ import (
 	"log"
 	"reviewtask/database"
 	"reviewtask/handlers"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,63 +26,22 @@ func main() {
 func setupRouter(app *handlers.App) *gin.Engine {
 	r := gin.Default()
 
+	// Health checks
 	r.GET("/health", handlers.HealthHandler(app.Repo.DB))
 	r.GET("/tables", handlers.TablesHandler(app.Repo.DB))
 
-	api := r.Group("/api/v1")
-	{
-		api.POST("/pull-requests", app.CreatePRHandler)
-		api.GET("/pull-requests/:id", app.GetPRHandler)
-		api.POST("/pull-requests/:id/merge", app.MergePRHandler)
-		api.GET("/users/:id/pull-requests", app.GetPRsByUserHandler)
+	// Teams endpoints
+	r.POST("/team/add", app.CreateTeamHandler)
+	r.GET("/team/get", app.GetTeamHandler)
 
-		api.PUT("/pull-requests/:id/reviewers", func(c *gin.Context) {
-			id, _ := strconv.Atoi(c.Param("id"))
+	// Users endpoints
+	r.POST("/users/setIsActive", app.SetUserActiveHandler)
+	r.GET("/users/getReview", app.GetUserReviewHandler)
 
-			var req struct {
-				OldReviewerID int `json:"old_reviewer_id"`
-				NewReviewerID int `json:"new_reviewer_id"`
-			}
-
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(400, gin.H{"error": "bad request"})
-				return
-			}
-
-			pr, err := app.Repo.GetPRByID(id)
-			if err != nil {
-				c.JSON(404, gin.H{"error": "pr not found"})
-				return
-			}
-
-			if pr.Status == "MERGED" {
-				c.JSON(400, gin.H{"error": "cannot change reviewers on merged PR"})
-				return
-			}
-
-			found := false
-			for i, reviewerID := range pr.Reviewers {
-				if reviewerID == req.OldReviewerID {
-					pr.Reviewers[i] = req.NewReviewerID
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				c.JSON(400, gin.H{"error": "old reviewer not found in PR"})
-				return
-			}
-
-			if err := app.Repo.UpdatePR(pr); err != nil {
-				c.JSON(500, gin.H{"error": "failed to update PR"})
-				return
-			}
-
-			c.JSON(200, pr)
-		})
-
-	}
+	// Pull Request endpoints
+	r.POST("/pullRequest/create", app.CreatePRHandler)
+	r.POST("/pullRequest/merge", app.MergePRHandler)
+	r.POST("/pullRequest/reassign", app.ReassignReviewerHandler)
 
 	return r
 }

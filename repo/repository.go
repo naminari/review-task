@@ -2,10 +2,9 @@ package repo
 
 import (
 	"database/sql"
-	"fmt"
+
 	"math/rand"
 	"reviewtask/models"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -19,128 +18,208 @@ func NewRepository(db *sql.DB) *Repository {
 	return &Repository{DB: db}
 }
 
-func (r *Repository) CreateUser(user *models.User) error {
-	query := `INSERT INTO users (username, is_active, team_id) VALUES ($1, $2, $3) RETURNING id, created_at`
-	return r.DB.QueryRow(query, user.Username, user.IsActive, user.TeamID).Scan(&user.ID, &user.CreatedAt)
+// Team methods
+func (r *Repository) CreateTeam(team *models.Team) error {
+	tx, err := r.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec("INSERT INTO teams (team_name) VALUES ($1)", team.TeamName)
+	if err != nil {
+		return err
+	}
+
+	for _, member := range team.Members {
+		_, err = tx.Exec(
+			"INSERT INTO users (user_id, username, team_name, is_active) VALUES ($1, $2, $3, $4)",
+			member.UserID, member.Username, team.TeamName, member.IsActive,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
-func (r *Repository) GetUserByID(id int) (*models.User, error) {
-	user := &models.User{}
-	query := `SELECT id, username, is_active, team_id, created_at FROM users WHERE id = $1`
-	err := r.DB.QueryRow(query, id).Scan(&user.ID, &user.Username, &user.IsActive, &user.TeamID, &user.CreatedAt)
+func (r *Repository) GetTeam(teamName string) (*models.Team, error) {
+	team := &models.Team{TeamName: teamName}
+
+	rows, err := r.DB.Query(
+		"SELECT user_id, username, is_active FROM users WHERE team_name = $1",
+		teamName,
+	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("user not found: %w", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var member models.TeamMember
+		if err := rows.Scan(&member.UserID, &member.Username, &member.IsActive); err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("get user by id: %w", err)
+		team.Members = append(team.Members, member)
+	}
+
+	return team, nil
+}
+
+// User methods
+func (r *Repository) SetUserActive(userID string, isActive bool) error {
+	_, err := r.DB.Exec(
+		"UPDATE users SET is_active = $1 WHERE user_id = $2",
+		isActive, userID,
+	)
+	return err
+}
+
+func (r *Repository) GetUser(userID string) (*models.User, error) {
+	user := &models.User{}
+	err := r.DB.QueryRow(
+		"SELECT user_id, username, team_name, is_active FROM users WHERE user_id = $1",
+		userID,
+	).Scan(&user.UserID, &user.Username, &user.TeamName, &user.IsActive)
+
+	if err != nil {
+		return nil, err
 	}
 	return user, nil
 }
 
-func (r *Repository) GetActiveUsersByTeam(teamID int, excludeUserIDs []int) ([]models.User, error) {
+// PR methods - обновляем для работы со строковыми ID
+func (r *Repository) CreatePR(pr *models.PullRequest) error {
 	query := `
-    SELECT id, username, is_active, team_id, created_at 
-    FROM users 
-    WHERE team_id = $1 AND is_active = true
-    ORDER BY id
+    INSERT INTO pull_requests (pull_request_id, pull_request_name, author_id, status, assigned_reviewers) 
+    VALUES ($1, $2, $3, $4, $5) 
+    RETURNING created_at
+  `
+	reviewersStr := strings.Join(pr.AssignedReviewers, ",")
+	return r.DB.QueryRow(
+		query,
+		pr.PullRequestID,
+		pr.PullRequestName,
+		pr.AuthorID,
+		pr.Status,
+		reviewersStr,
+	).Scan(&pr.CreatedAt)
+}
+
+func (r *Repository) GetPR(pullRequestID string) (*models.PullRequest, error) {
+	pr := &models.PullRequest{}
+	var reviewersStr string
+	var mergedAt sql.NullTime
+
+	query := `
+    SELECT pull_request_id, pull_request_name, author_id, status, assigned_reviewers, created_at, merged_at
+    FROM pull_requests 
+    WHERE pull_request_id = $1
   `
 
-	rows, err := r.DB.Query(query, teamID)
+	err := r.DB.QueryRow(query, pullRequestID).Scan(
+		&pr.PullRequestID,
+		&pr.PullRequestName,
+		&pr.AuthorID,
+		&pr.Status,
+		&reviewersStr,
+		&pr.CreatedAt,
+		&mergedAt,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("get active users by team: %w", err)
+		return nil, err
+	}
+
+	if mergedAt.Valid {
+		pr.MergedAt = &mergedAt.Time
+	}
+
+	pr.AssignedReviewers = strings.Split(reviewersStr, ",")
+	if len(pr.AssignedReviewers) == 1 && pr.AssignedReviewers[0] == "" {
+		pr.AssignedReviewers = []string{}
+	}
+
+	return pr, nil
+}
+
+func (r *Repository) MergePR(pullRequestID string) error {
+	_, err := r.DB.Exec(
+		"UPDATE pull_requests SET status = 'MERGED', merged_at = NOW() WHERE pull_request_id = $1",
+		pullRequestID,
+	)
+	return err
+}
+
+func (r *Repository) UpdatePRReviewers(pr *models.PullRequest) error {
+	reviewersStr := strings.Join(pr.AssignedReviewers, ",")
+	_, err := r.DB.Exec(
+		"UPDATE pull_requests SET assigned_reviewers = $1 WHERE pull_request_id = $2",
+		reviewersStr, pr.PullRequestID,
+	)
+	return err
+}
+
+func (r *Repository) GetPRsByReviewer(userID string) ([]models.PullRequestShort, error) {
+	query := `
+    SELECT pull_request_id, pull_request_name, author_id, status
+    FROM pull_requests 
+    WHERE $1 = ANY(STRING_TO_ARRAY(assigned_reviewers, ','))
+    ORDER BY created_at DESC
+  `
+
+	rows, err := r.DB.Query(query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var prs []models.PullRequestShort
+	for rows.Next() {
+		var pr models.PullRequestShort
+		if err := rows.Scan(&pr.PullRequestID, &pr.PullRequestName, &pr.AuthorID, &pr.Status); err != nil {
+			return nil, err
+		}
+		prs = append(prs, pr)
+	}
+
+	return prs, nil
+}
+
+// Business logic
+func (r *Repository) GetActiveUsersByTeam(teamName string, excludeUserIDs []string) ([]models.User, error) {
+	query := `
+    SELECT user_id, username, team_name, is_active 
+    FROM users 
+    WHERE team_name = $1 AND is_active = true
+    ORDER BY user_id
+  `
+
+	rows, err := r.DB.Query(query, teamName)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
 	var users []models.User
 	for rows.Next() {
 		var user models.User
-		if err := rows.Scan(&user.ID, &user.Username, &user.IsActive, &user.TeamID, &user.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan user: %w", err)
+		if err := rows.Scan(&user.UserID, &user.Username, &user.TeamName, &user.IsActive); err != nil {
+			return nil, err
 		}
-		if !contains(excludeUserIDs, user.ID) {
+
+		// Фильтруем исключенных пользователей
+		if !containsString(excludeUserIDs, user.UserID) {
 			users = append(users, user)
 		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
 	}
 
 	return users, nil
 }
 
-func (r *Repository) CreateTeam(team *models.Team) error {
-	query := `INSERT INTO teams (name) VALUES ($1) RETURNING id, created_at`
-	return r.DB.QueryRow(query, team.Name).Scan(&team.ID, &team.CreatedAt)
-}
-
-func (r *Repository) GetTeamByID(id int) (*models.Team, error) {
-	team := &models.Team{}
-	query := `SELECT id, name, created_at FROM teams WHERE id = $1`
-	err := r.DB.QueryRow(query, id).Scan(&team.ID, &team.Name, &team.CreatedAt)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("team not found: %w", err)
-		}
-		return nil, fmt.Errorf("get team by id: %w", err)
-	}
-	return team, nil
-}
-
-func (r *Repository) CreatePR(pr *models.PullRequest) error {
-	query := `
-    INSERT INTO pull_requests (title, author_id, status, reviewers) 
-    VALUES ($1, $2, $3, $4) 
-    RETURNING id, created_at, updated_at
-  `
-	reviewersStr := intSliceToString(pr.Reviewers)
-	return r.DB.QueryRow(query, pr.Title, pr.AuthorID, pr.Status, reviewersStr).Scan(&pr.ID, &pr.CreatedAt, &pr.UpdatedAt)
-}
-
-func (r *Repository) GetPRByID(id int) (*models.PullRequest, error) {
-	pr := &models.PullRequest{}
-	query := `
-    SELECT id, title, author_id, status, reviewers, created_at, updated_at 
-    FROM pull_requests 
-    WHERE id = $1
-  `
-
-	var reviewersStr string
-	err := r.DB.QueryRow(query, id).Scan(
-		&pr.ID,
-		&pr.Title,
-		&pr.AuthorID,
-		&pr.Status,
-		&reviewersStr,
-		&pr.CreatedAt,
-		&pr.UpdatedAt,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("PR not found: %w", err)
-		}
-		return nil, fmt.Errorf("get PR by id: %w", err)
-	}
-
-	pr.Reviewers = stringToIntSlice(reviewersStr)
-	return pr, nil
-}
-
-func (r *Repository) UpdatePR(pr *models.PullRequest) error {
-	query := `
-    UPDATE pull_requests 
-    SET title = $1, status = $2, reviewers = $3, updated_at = NOW() 
-    WHERE id = $4 
-    RETURNING updated_at
-  `
-	reviewersStr := intSliceToString(pr.Reviewers)
-	return r.DB.QueryRow(query, pr.Title, pr.Status, reviewersStr, pr.ID).Scan(&pr.UpdatedAt)
-}
-
-// GetRandomReviewers - выбирает случайных ревьюеров
-func (r *Repository) GetRandomReviewers(users []models.User, count int) []int {
+func (r *Repository) GetRandomReviewers(users []models.User, count int) []string {
 	if len(users) == 0 || count <= 0 {
-		return []int{}
+		return []string{}
 	}
 
 	if count > len(users) {
@@ -153,89 +232,20 @@ func (r *Repository) GetRandomReviewers(users []models.User, count int) []int {
 		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 	})
 
-	result := make([]int, count)
+	result := make([]string, count)
 	for i := 0; i < count; i++ {
-		result[i] = shuffled[i].ID
+		result[i] = shuffled[i].UserID
 	}
 
 	return result
 }
 
-func intSliceToString(arr []int) string {
-	if len(arr) == 0 {
-		return "{}"
-	}
-	strArr := make([]string, len(arr))
-	for i, v := range arr {
-		strArr[i] = strconv.Itoa(v)
-	}
-	return "{" + strings.Join(strArr, ",") + "}"
-}
-
-func stringToIntSlice(s string) []int {
-	if s == "" || s == "{}" {
-		return []int{}
-	}
-	clean := strings.Trim(s, "{}")
-	if clean == "" {
-		return []int{}
-	}
-	parts := strings.Split(clean, ",")
-	result := make([]int, len(parts))
-	for i, part := range parts {
-		result[i], _ = strconv.Atoi(strings.TrimSpace(part))
-	}
-	return result
-}
-
-func contains(slice []int, item int) bool {
+// Вспомогательные функции
+func containsString(slice []string, item string) bool {
 	for _, v := range slice {
 		if v == item {
 			return true
 		}
 	}
 	return false
-}
-
-func (r *Repository) GetPRsByReviewer(userID int) ([]models.PullRequest, error) {
-	query := `
-    SELECT id, title, author_id, status, reviewers, created_at, updated_at 
-    FROM pull_requests 
-    WHERE $1 = ANY(reviewers)
-    ORDER BY created_at DESC
-  `
-
-	rows, err := r.DB.Query(query, userID)
-	if err != nil {
-		return nil, fmt.Errorf("get PRs by reviewer: %w", err)
-	}
-	defer rows.Close()
-
-	var prs []models.PullRequest
-	for rows.Next() {
-		var pr models.PullRequest
-		var reviewersStr string
-
-		err := rows.Scan(
-			&pr.ID,
-			&pr.Title,
-			&pr.AuthorID,
-			&pr.Status,
-			&reviewersStr,
-			&pr.CreatedAt,
-			&pr.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan PR: %w", err)
-		}
-
-		pr.Reviewers = stringToIntSlice(reviewersStr)
-		prs = append(prs, pr)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	return prs, nil
 }

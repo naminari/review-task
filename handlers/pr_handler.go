@@ -2,112 +2,168 @@ package handlers
 
 import (
 	"log"
-	"strconv"
-
-	"reviewtask/models"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (app *App) CreatePRHandler(c *gin.Context) {
 	var req struct {
-		Title    string `json:"title"`
-		AuthorID int    `json:"author_id"`
+		PullRequestID   string `json:"pull_request_id"`
+		PullRequestName string `json:"pull_request_name"`
+		AuthorID        string `json:"author_id"`
 	}
 
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "bad request"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": map[string]interface{}{
+				"code":    "BAD_REQUEST",
+				"message": "invalid request body",
+			},
+		})
 		return
 	}
 
-	log.Printf("Creating PR: title=%s, author_id=%d", req.Title, req.AuthorID)
+	log.Printf("Creating PR: id=%s, name=%s, author_id=%s",
+		req.PullRequestID, req.PullRequestName, req.AuthorID)
 
-	author, err := app.Repo.GetUserByID(req.AuthorID)
+	pr, err := app.Service.CreatePRWithReviewers(req.PullRequestID, req.PullRequestName, req.AuthorID)
 	if err != nil {
-		log.Printf("Author not found: %v", err)
-		c.JSON(400, gin.H{"error": "author not found"})
-		return
-	}
-	log.Printf("Author found: %s (team: %d)", author.Username, author.TeamID)
-
-	reviewers, err := app.Service.AssignReviewers(author.ID, author.TeamID)
-	if err != nil {
-		log.Printf("Failed to assign reviewers: %v", err)
-		c.JSON(500, gin.H{"error": "cant assign reviewers"})
-		return
-	}
-	log.Printf("Assigned reviewers: %v", reviewers)
-
-	pr := &models.PullRequest{
-		Title:     req.Title,
-		AuthorID:  author.ID,
-		Status:    models.StatusOpen,
-		Reviewers: reviewers,
-	}
-
-	if err := app.Repo.CreatePR(pr); err != nil {
-		log.Printf("Failed to create PR: %v", err)
-		c.JSON(500, gin.H{"error": "cant create pr"})
-		return
-	}
-
-	log.Printf("PR created successfully: ID=%d", pr.ID)
-	c.JSON(200, pr)
-}
-
-func (app *App) GetPRHandler(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-
-	pr, err := app.Repo.GetPRByID(id)
-	if err != nil {
-		c.JSON(404, gin.H{"error": "pr not found"})
+		switch err.Error() {
+		case "PR id already exists":
+			c.JSON(http.StatusConflict, gin.H{
+				"error": map[string]interface{}{
+					"code":    "PR_EXISTS",
+					"message": "PR id already exists",
+				},
+			})
+		case "author not found":
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": map[string]interface{}{
+					"code":    "NOT_FOUND",
+					"message": "author/team not found",
+				},
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": map[string]interface{}{
+					"code":    "INTERNAL_ERROR",
+					"message": err.Error(),
+				},
+			})
+		}
 		return
 	}
 
-	c.JSON(200, pr)
+	log.Printf("PR created successfully: ID=%s", pr.PullRequestID)
+	c.JSON(http.StatusCreated, gin.H{
+		"pr": pr,
+	})
 }
 
 func (app *App) MergePRHandler(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		PullRequestID string `json:"pull_request_id"`
+	}
 
-	pr, err := app.Repo.GetPRByID(id)
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": map[string]interface{}{
+				"code":    "BAD_REQUEST",
+				"message": "invalid request body",
+			},
+		})
+		return
+	}
+
+	pr, err := app.Service.MergePR(req.PullRequestID)
 	if err != nil {
-		c.JSON(404, gin.H{"error": "pr not found"})
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": map[string]interface{}{
+				"code":    "NOT_FOUND",
+				"message": "PR not found",
+			},
+		})
 		return
 	}
 
-	if pr.Status == models.StatusMerged {
-		c.JSON(200, pr)
-		return
-	}
-
-	pr.Status = models.StatusMerged
-	if err := app.Repo.UpdatePR(pr); err != nil {
-		c.JSON(500, gin.H{"error": "cant merge"})
-		return
-	}
-
-	c.JSON(200, pr)
+	c.JSON(http.StatusOK, gin.H{
+		"pr": pr,
+	})
 }
 
-func (app *App) GetPRsByUserHandler(c *gin.Context) {
-	userID, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(400, gin.H{"error": "invalid user id"})
+func (app *App) ReassignReviewerHandler(c *gin.Context) {
+	var req struct {
+		PullRequestID string `json:"pull_request_id"`
+		OldUserID     string `json:"old_user_id"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": map[string]interface{}{
+				"code":    "BAD_REQUEST",
+				"message": "invalid request body",
+			},
+		})
 		return
 	}
 
-	_, err = app.Repo.GetUserByID(userID)
+	newReviewer, err := app.Service.ReassignReviewer(req.PullRequestID, req.OldUserID)
 	if err != nil {
-		c.JSON(404, gin.H{"error": "user not found"})
+		switch err.Error() {
+		case "cannot reassign on merged PR":
+			c.JSON(http.StatusConflict, gin.H{
+				"error": map[string]interface{}{
+					"code":    "PR_MERGED",
+					"message": "cannot reassign on merged PR",
+				},
+			})
+		case "reviewer is not assigned to this PR":
+			c.JSON(http.StatusConflict, gin.H{
+				"error": map[string]interface{}{
+					"code":    "NOT_ASSIGNED",
+					"message": "reviewer is not assigned to this PR",
+				},
+			})
+		case "no active replacement candidate in team":
+			c.JSON(http.StatusConflict, gin.H{
+				"error": map[string]interface{}{
+					"code":    "NO_CANDIDATE",
+					"message": "no active replacement candidate in team",
+				},
+			})
+		case "PR not found", "old reviewer not found":
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": map[string]interface{}{
+					"code":    "NOT_FOUND",
+					"message": err.Error(),
+				},
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": map[string]interface{}{
+					"code":    "INTERNAL_ERROR",
+					"message": err.Error(),
+				},
+			})
+		}
 		return
 	}
 
-	prs, err := app.Repo.GetPRsByReviewer(userID)
+	// Получаем обновленный PR
+	pr, err := app.Repo.GetPR(req.PullRequestID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "failed to get user PRs"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": map[string]interface{}{
+				"code":    "INTERNAL_ERROR",
+				"message": "failed to get updated PR",
+			},
+		})
 		return
 	}
 
-	c.JSON(200, prs)
+	c.JSON(http.StatusOK, gin.H{
+		"pr":          pr,
+		"replaced_by": newReviewer,
+	})
 }

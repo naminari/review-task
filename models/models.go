@@ -1,24 +1,25 @@
 package models
 
 import (
-	"database/sql/driver"
-	"encoding/json"
-	"errors"
 	"time"
 )
 
 type User struct {
-	ID        int       `json:"id" db:"id"`
-	Username  string    `json:"username" db:"username"`
-	IsActive  bool      `json:"is_active" db:"is_active"`
-	TeamID    int       `json:"team_id" db:"team_id"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	UserID   string `json:"user_id" db:"user_id"`
+	Username string `json:"username" db:"username"`
+	TeamName string `json:"team_name" db:"team_name"`
+	IsActive bool   `json:"is_active" db:"is_active"`
 }
 
 type Team struct {
-	ID        int       `json:"id" db:"id"`
-	Name      string    `json:"name" db:"name"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	TeamName string       `json:"team_name" db:"team_name"`
+	Members  []TeamMember `json:"members" db:"-"`
+}
+
+type TeamMember struct {
+	UserID   string `json:"user_id" db:"user_id"`
+	Username string `json:"username" db:"username"`
+	IsActive bool   `json:"is_active" db:"is_active"`
 }
 
 type PRStatus string
@@ -29,25 +30,18 @@ const (
 )
 
 type PullRequest struct {
-	ID        int       `json:"id" db:"id"`
-	Title     string    `json:"title" db:"title"`
-	AuthorID  int       `json:"author_id" db:"author_id"`
-	Status    PRStatus  `json:"status" db:"status"`
-	Reviewers []int     `json:"reviewers" db:"-"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	PullRequestID     string     `json:"pull_request_id" db:"pull_request_id"`
+	PullRequestName   string     `json:"pull_request_name" db:"pull_request_name"`
+	AuthorID          string     `json:"author_id" db:"author_id"`
+	Status            PRStatus   `json:"status" db:"status"`
+	AssignedReviewers []string   `json:"assigned_reviewers" db:"-"`
+	CreatedAt         time.Time  `json:"createdAt" db:"created_at"`
+	MergedAt          *time.Time `json:"mergedAt,omitempty" db:"merged_at"`
 }
 
-type UserIDs []int
-
-func (u *UserIDs) Scan(value interface{}) error {
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
-	}
-	return json.Unmarshal(bytes, u)
-}
-
-func (u UserIDs) Value() (driver.Value, error) {
-	return json.Marshal(u)
+type PullRequestShort struct {
+	PullRequestID   string   `json:"pull_request_id"`
+	PullRequestName string   `json:"pull_request_name"`
+	AuthorID        string   `json:"author_id"`
+	Status          PRStatus `json:"status"`
 }
