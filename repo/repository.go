@@ -5,40 +5,29 @@ import (
 	"fmt"
 	"math/rand"
 	"reviewtask/models"
+	"strconv"
+	"strings"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 type Repository struct {
-	db *sql.DB
+	DB *sql.DB
 }
 
 func NewRepository(db *sql.DB) *Repository {
 	rand.Seed(time.Now().UnixNano())
-	return &Repository{db: db}
-}
-func (r *Repository) DB() *sql.DB {
-	return r.db
-}
-
-// UserRepository методы для работы с пользователями
-type UserRepository interface {
-	CreateUser(user *models.User) error
-	GetUserByID(id int) (*models.User, error)
-	GetActiveUsersByTeam(teamID int, excludeUserIDs []int) ([]models.User, error)
-	DeactivateUser(userID int) error
+	return &Repository{DB: db}
 }
 
 func (r *Repository) CreateUser(user *models.User) error {
 	query := `INSERT INTO users (username, is_active, team_id) VALUES ($1, $2, $3) RETURNING id, created_at`
-	return r.db.QueryRow(query, user.Username, user.IsActive, user.TeamID).Scan(&user.ID, &user.CreatedAt)
+	return r.DB.QueryRow(query, user.Username, user.IsActive, user.TeamID).Scan(&user.ID, &user.CreatedAt)
 }
 
 func (r *Repository) GetUserByID(id int) (*models.User, error) {
 	user := &models.User{}
 	query := `SELECT id, username, is_active, team_id, created_at FROM users WHERE id = $1`
-	err := r.db.QueryRow(query, id).Scan(&user.ID, &user.Username, &user.IsActive, &user.TeamID, &user.CreatedAt)
+	err := r.DB.QueryRow(query, id).Scan(&user.ID, &user.Username, &user.IsActive, &user.TeamID, &user.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("user not found: %w", err)
@@ -48,16 +37,15 @@ func (r *Repository) GetUserByID(id int) (*models.User, error) {
 	return user, nil
 }
 
-// GetActiveUsersByTeam - получает активных пользователей команды, исключая указанных
 func (r *Repository) GetActiveUsersByTeam(teamID int, excludeUserIDs []int) ([]models.User, error) {
 	query := `
     SELECT id, username, is_active, team_id, created_at 
     FROM users 
-    WHERE team_id = $1 AND is_active = true AND id != ALL($2)
+    WHERE team_id = $1 AND is_active = true
     ORDER BY id
   `
 
-	rows, err := r.db.Query(query, teamID, pq.Array(excludeUserIDs))
+	rows, err := r.DB.Query(query, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("get active users by team: %w", err)
 	}
@@ -69,7 +57,9 @@ func (r *Repository) GetActiveUsersByTeam(teamID int, excludeUserIDs []int) ([]m
 		if err := rows.Scan(&user.ID, &user.Username, &user.IsActive, &user.TeamID, &user.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
-		users = append(users, user)
+		if !contains(excludeUserIDs, user.ID) {
+			users = append(users, user)
+		}
 	}
 
 	if err := rows.Err(); err != nil {
@@ -79,22 +69,15 @@ func (r *Repository) GetActiveUsersByTeam(teamID int, excludeUserIDs []int) ([]m
 	return users, nil
 }
 
-// TeamRepository методы для работы с командами
-type TeamRepository interface {
-	CreateTeam(team *models.Team) error
-	GetTeamByID(id int) (*models.Team, error)
-	GetTeamByName(name string) (*models.Team, error)
-}
-
 func (r *Repository) CreateTeam(team *models.Team) error {
 	query := `INSERT INTO teams (name) VALUES ($1) RETURNING id, created_at`
-	return r.db.QueryRow(query, team.Name).Scan(&team.ID, &team.CreatedAt)
+	return r.DB.QueryRow(query, team.Name).Scan(&team.ID, &team.CreatedAt)
 }
 
 func (r *Repository) GetTeamByID(id int) (*models.Team, error) {
 	team := &models.Team{}
 	query := `SELECT id, name, created_at FROM teams WHERE id = $1`
-	err := r.db.QueryRow(query, id).Scan(&team.ID, &team.Name, &team.CreatedAt)
+	err := r.DB.QueryRow(query, id).Scan(&team.ID, &team.Name, &team.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("team not found: %w", err)
@@ -104,40 +87,14 @@ func (r *Repository) GetTeamByID(id int) (*models.Team, error) {
 	return team, nil
 }
 
-func (r *Repository) GetTeamByName(name string) (*models.Team, error) {
-	team := &models.Team{}
-	query := `SELECT id, name, created_at FROM teams WHERE name = $1`
-	err := r.db.QueryRow(query, name).Scan(&team.ID, &team.Name, &team.CreatedAt)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("team not found: %w", err)
-		}
-		return nil, fmt.Errorf("get team by name: %w", err)
-	}
-	return team, nil
-}
-
-// PRRepository методы для работы с Pull Request'ами
-type PRRepository interface {
-	CreatePR(pr *models.PullRequest) error
-	GetPRByID(id int) (*models.PullRequest, error)
-	UpdatePR(pr *models.PullRequest) error
-	GetPRsByReviewer(userID int) ([]models.PullRequest, error)
-}
-
 func (r *Repository) CreatePR(pr *models.PullRequest) error {
 	query := `
     INSERT INTO pull_requests (title, author_id, status, reviewers) 
     VALUES ($1, $2, $3, $4) 
     RETURNING id, created_at, updated_at
   `
-	return r.db.QueryRow(
-		query,
-		pr.Title,
-		pr.AuthorID,
-		pr.Status,
-		pr.Reviewers,
-	).Scan(&pr.ID, &pr.CreatedAt, &pr.UpdatedAt)
+	reviewersStr := intSliceToString(pr.Reviewers)
+	return r.DB.QueryRow(query, pr.Title, pr.AuthorID, pr.Status, reviewersStr).Scan(&pr.ID, &pr.CreatedAt, &pr.UpdatedAt)
 }
 
 func (r *Repository) GetPRByID(id int) (*models.PullRequest, error) {
@@ -147,12 +104,14 @@ func (r *Repository) GetPRByID(id int) (*models.PullRequest, error) {
     FROM pull_requests 
     WHERE id = $1
   `
-	err := r.db.QueryRow(query, id).Scan(
+
+	var reviewersStr string
+	err := r.DB.QueryRow(query, id).Scan(
 		&pr.ID,
 		&pr.Title,
 		&pr.AuthorID,
 		&pr.Status,
-		&pr.Reviewers,
+		&reviewersStr,
 		&pr.CreatedAt,
 		&pr.UpdatedAt,
 	)
@@ -162,6 +121,8 @@ func (r *Repository) GetPRByID(id int) (*models.PullRequest, error) {
 		}
 		return nil, fmt.Errorf("get PR by id: %w", err)
 	}
+
+	pr.Reviewers = stringToIntSlice(reviewersStr)
 	return pr, nil
 }
 
@@ -172,16 +133,11 @@ func (r *Repository) UpdatePR(pr *models.PullRequest) error {
     WHERE id = $4 
     RETURNING updated_at
   `
-	return r.db.QueryRow(
-		query,
-		pr.Title,
-		pr.Status,
-		pr.Reviewers,
-		pr.ID,
-	).Scan(&pr.UpdatedAt)
+	reviewersStr := intSliceToString(pr.Reviewers)
+	return r.DB.QueryRow(query, pr.Title, pr.Status, reviewersStr, pr.ID).Scan(&pr.UpdatedAt)
 }
 
-// GetRandomReviewers - выбирает случайных ревьюеров из списка пользователей
+// GetRandomReviewers - выбирает случайных ревьюеров
 func (r *Repository) GetRandomReviewers(users []models.User, count int) []int {
 	if len(users) == 0 || count <= 0 {
 		return []int{}
@@ -191,18 +147,52 @@ func (r *Repository) GetRandomReviewers(users []models.User, count int) []int {
 		count = len(users)
 	}
 
-	// Перемешиваем массив
 	shuffled := make([]models.User, len(users))
 	copy(shuffled, users)
 	rand.Shuffle(len(shuffled), func(i, j int) {
 		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 	})
 
-	// Берем первых count элементов
 	result := make([]int, count)
 	for i := 0; i < count; i++ {
 		result[i] = shuffled[i].ID
 	}
 
 	return result
+}
+
+func intSliceToString(arr []int) string {
+	if len(arr) == 0 {
+		return "{}"
+	}
+	strArr := make([]string, len(arr))
+	for i, v := range arr {
+		strArr[i] = strconv.Itoa(v)
+	}
+	return "{" + strings.Join(strArr, ",") + "}"
+}
+
+func stringToIntSlice(s string) []int {
+	if s == "" || s == "{}" {
+		return []int{}
+	}
+	clean := strings.Trim(s, "{}")
+	if clean == "" {
+		return []int{}
+	}
+	parts := strings.Split(clean, ",")
+	result := make([]int, len(parts))
+	for i, part := range parts {
+		result[i], _ = strconv.Atoi(strings.TrimSpace(part))
+	}
+	return result
+}
+
+func contains(slice []int, item int) bool {
+	for _, v := range slice {
+		if v == item {
+			return true
+		}
+	}
+	return false
 }

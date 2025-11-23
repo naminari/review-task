@@ -7,13 +7,11 @@ import (
 )
 
 func InitTestData(repo *repo.Repository) {
-	// Тестовая команда
 	team := &models.Team{Name: "backend-team"}
 	if err := repo.CreateTeam(team); err != nil {
 		log.Printf("Team might already exist: %v", err)
 	}
 
-	// Тестовые пользователи
 	users := []struct {
 		username string
 		teamID   int

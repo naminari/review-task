@@ -28,21 +28,18 @@ const (
 	StatusMerged PRStatus = "MERGED"
 )
 
-// PullRequest - сущность PR
 type PullRequest struct {
 	ID        int       `json:"id" db:"id"`
 	Title     string    `json:"title" db:"title"`
 	AuthorID  int       `json:"author_id" db:"author_id"`
 	Status    PRStatus  `json:"status" db:"status"`
-	Reviewers UserIDs   `json:"reviewers" db:"reviewers"`
+	Reviewers []int     `json:"reviewers" db:"-"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// UserIDs - кастомный тип для массива ID пользователей
 type UserIDs []int
 
-// Scan - реализация интерфейса Scanner для работы с PostgreSQL массивами
 func (u *UserIDs) Scan(value interface{}) error {
 	bytes, ok := value.([]byte)
 	if !ok {
@@ -51,7 +48,6 @@ func (u *UserIDs) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, u)
 }
 
-// Value - реализация интерфейса Valuer
 func (u UserIDs) Value() (driver.Value, error) {
 	return json.Marshal(u)
 }

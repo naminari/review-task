@@ -9,20 +9,15 @@ import (
 )
 
 func main() {
-	// Инициализация БД
 	db := database.InitDB()
-	defer db.DB().Close()
+	defer db.DB.Close()
 
-	// Инициализация репозиториев и сервисов
 	app := handlers.NewApp(db)
 
-	// Тестовые данные
 	database.InitTestData(app.Repo)
 
-	// Роутер
 	r := setupRouter(app)
 
-	// Запуск
 	port := "8080"
 	log.Printf("Server starting on :%s...", port)
 	log.Fatal(r.Run(":" + port))
@@ -31,11 +26,9 @@ func main() {
 func setupRouter(app *handlers.App) *gin.Engine {
 	r := gin.Default()
 
-	// Health checks
-	r.GET("/health", handlers.HealthHandler(app.Repo.DB()))
-	r.GET("/tables", handlers.TablesHandler(app.Repo.DB()))
+	r.GET("/health", handlers.HealthHandler(app.Repo.DB))
+	r.GET("/tables", handlers.TablesHandler(app.Repo.DB))
 
-	// API routes
 	api := r.Group("/api/v1")
 	{
 		api.POST("/pull-requests", app.CreatePRHandler)

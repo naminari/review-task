@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"net/http"
+	"log"
 	"strconv"
 
 	"reviewtask/models"
@@ -16,25 +16,28 @@ func (app *App) CreatePRHandler(c *gin.Context) {
 	}
 
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		c.JSON(400, gin.H{"error": "bad request"})
 		return
 	}
 
-	// Получаем автора
+	log.Printf("Creating PR: title=%s, author_id=%d", req.Title, req.AuthorID)
+
 	author, err := app.Repo.GetUserByID(req.AuthorID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Author not found"})
+		log.Printf("Author not found: %v", err)
+		c.JSON(400, gin.H{"error": "author not found"})
 		return
 	}
+	log.Printf("Author found: %s (team: %d)", author.Username, author.TeamID)
 
-	// Назначаем ревьюеров
 	reviewers, err := app.Service.AssignReviewers(author.ID, author.TeamID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign reviewers"})
+		log.Printf("Failed to assign reviewers: %v", err)
+		c.JSON(500, gin.H{"error": "cant assign reviewers"})
 		return
 	}
+	log.Printf("Assigned reviewers: %v", reviewers)
 
-	// Создаем PR
 	pr := &models.PullRequest{
 		Title:     req.Title,
 		AuthorID:  author.ID,
@@ -43,54 +46,46 @@ func (app *App) CreatePRHandler(c *gin.Context) {
 	}
 
 	if err := app.Repo.CreatePR(pr); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create PR"})
+		log.Printf("Failed to create PR: %v", err)
+		c.JSON(500, gin.H{"error": "cant create pr"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, pr)
+	log.Printf("PR created successfully: ID=%d", pr.ID)
+	c.JSON(200, pr)
 }
 
 func (app *App) GetPRHandler(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid PR ID"})
-		return
-	}
+	id, _ := strconv.Atoi(c.Param("id"))
 
 	pr, err := app.Repo.GetPRByID(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "PR not found"})
+		c.JSON(404, gin.H{"error": "pr not found"})
 		return
 	}
 
-	c.JSON(http.StatusOK, pr)
+	c.JSON(200, pr)
 }
 
 func (app *App) MergePRHandler(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid PR ID"})
-		return
-	}
+	id, _ := strconv.Atoi(c.Param("id"))
 
 	pr, err := app.Repo.GetPRByID(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "PR not found"})
+		c.JSON(404, gin.H{"error": "pr not found"})
 		return
 	}
 
-	// Идемпотентность - если уже мерджнут, возвращаем успех
 	if pr.Status == models.StatusMerged {
-		c.JSON(http.StatusOK, pr)
+		c.JSON(200, pr)
 		return
 	}
 
-	// Мерджим
 	pr.Status = models.StatusMerged
 	if err := app.Repo.UpdatePR(pr); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to merge PR"})
+		c.JSON(500, gin.H{"error": "cant merge"})
 		return
 	}
 
-	c.JSON(http.StatusOK, pr)
+	c.JSON(200, pr)
 }
