@@ -1,4 +1,4 @@
-module review-task
+module reviewtask
 
 go 1.21
 
