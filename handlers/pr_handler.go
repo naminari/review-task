@@ -89,3 +89,25 @@ func (app *App) MergePRHandler(c *gin.Context) {
 
 	c.JSON(200, pr)
 }
+
+func (app *App) GetPRsByUserHandler(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid user id"})
+		return
+	}
+
+	_, err = app.Repo.GetUserByID(userID)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "user not found"})
+		return
+	}
+
+	prs, err := app.Repo.GetPRsByReviewer(userID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to get user PRs"})
+		return
+	}
+
+	c.JSON(200, prs)
+}

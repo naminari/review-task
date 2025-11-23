@@ -196,3 +196,46 @@ func contains(slice []int, item int) bool {
 	}
 	return false
 }
+
+func (r *Repository) GetPRsByReviewer(userID int) ([]models.PullRequest, error) {
+	query := `
+    SELECT id, title, author_id, status, reviewers, created_at, updated_at 
+    FROM pull_requests 
+    WHERE $1 = ANY(reviewers)
+    ORDER BY created_at DESC
+  `
+
+	rows, err := r.DB.Query(query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get PRs by reviewer: %w", err)
+	}
+	defer rows.Close()
+
+	var prs []models.PullRequest
+	for rows.Next() {
+		var pr models.PullRequest
+		var reviewersStr string
+
+		err := rows.Scan(
+			&pr.ID,
+			&pr.Title,
+			&pr.AuthorID,
+			&pr.Status,
+			&reviewersStr,
+			&pr.CreatedAt,
+			&pr.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan PR: %w", err)
+		}
+
+		pr.Reviewers = stringToIntSlice(reviewersStr)
+		prs = append(prs, pr)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return prs, nil
+}
